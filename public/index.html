@@ -385,8 +385,22 @@
 							<input id="candidate_name" name="candidate_name" type="text" placeholder="Jane Doe" required />
 						</div>
 						<div class="field">
+							<label for="requested_directions">Directions <span class="hint">default Drop-off</span></label>
+							<select id="requested_directions" name="requested_directions">
+								<option value="Drop-off" selected>Drop-off only</option>
+								<option value="Pick-up">Pick-up only</option>
+								<option value="Both">Both &mdash; two separate trips</option>
+							</select>
+						</div>
+						<div class="field">
 							<label for="dropoff_location">Dropoff location <span class="hint req">required</span></label>
 							<input id="dropoff_location" name="dropoff_location" type="text" placeholder="123 Market St, San Francisco" required />
+						</div>
+						<!-- Hidden for "Drop-off only", where a pickup address is a contradiction
+						     the API rejects rather than silently ignores. -->
+						<div class="field" id="pickup_field" style="display:none">
+							<label for="pickup_location">Pickup location <span class="hint">optional &middot; defaults to the dropoff place</span></label>
+							<input id="pickup_location" name="pickup_location" type="text" placeholder="Leave blank to collect from the dropoff place" />
 						</div>
 						<div class="field">
 							<label for="phone">Phone <span class="hint">optional</span></label>
@@ -551,6 +565,12 @@
 
 		const REQUESTABLE_FRAPPE_STATUSES = new Set(["Approved", "Requested Reservation"]);
 
+		/** Expands the intake flag into the legs it produces. "Both" is not a direction. */
+		function legDirectionsFor(c) {
+			if (c.requested_directions === "Both") return ["Pick-up", "Drop-off"];
+			return [c.requested_directions || "Drop-off"];
+		}
+
 		function renderCandidate(c) {
 			const chips = [];
 			if (c.phone) chips.push(`<span class="chip"><b>phone</b> ${escapeHtml(c.phone)}</span>`);
@@ -559,15 +579,39 @@
 			if (c.frappe_candidate) chips.push(`<span class="chip"><b>frappe</b> ${escapeHtml(c.frappe_candidate)}</span>`);
 			if (c.frappe_status) chips.push(`<span class="chip"><b>status</b> ${escapeHtml(c.frappe_status)}</span>`);
 
-			const reservation = c.reservation;
-			const badge = reservation
-				? `<span class="reservation-badge ${reservationBadgeClass(reservation.status)}">${escapeHtml(reservation.status)}${reservation.matched_route ? ` · ${escapeHtml(reservation.matched_route)}` : ""}</span>`
-				: "";
-			const alreadyRequested = reservation && reservation.status === "Requested";
-			const canRequest = !alreadyRequested && REQUESTABLE_FRAPPE_STATUSES.has(c.frappe_status);
-			const requestBtn = canRequest
-				? `<button type="button" class="secondary tiny" data-request="${escapeHtml(c.id || c.name)}">Request reservation</button>`
-				: `<span class="ts">Created ${escapeHtml(timeAgo(c.created_at))}</span>`;
+			if (c.requested_directions) chips.push(`<span class="chip"><b>wants</b> ${escapeHtml(c.requested_directions)}</span>`);
+			if (c.pickup_location) chips.push(`<span class="chip"><b>from</b> ${escapeHtml(c.pickup_location)}</span>`);
+
+			// One badge and one button per leg. A candidate who rides both ways has two
+			// independent decisions, so collapsing them to a single control would make
+			// one of the two unreachable.
+			const legs = legDirectionsFor(c);
+			const trips = c.frappe_trips || [];
+			const badge = legs
+				.map((direction) => {
+					const reservation = (c.reservations || []).find((r) => r.direction === direction);
+					const trip = trips.find((t) => t.direction === direction);
+					const label = reservation ? reservation.status : trip ? trip.status : "—";
+					const route = reservation?.matched_route || trip?.matched_route || "";
+					return `<span class="reservation-badge ${reservationBadgeClass(reservation?.status)}">${escapeHtml(direction)} · ${escapeHtml(label)}${route ? ` · ${escapeHtml(route)}` : ""}</span>`;
+				})
+				.join("");
+
+			const requestable = legs.filter((direction) => {
+				const reservation = (c.reservations || []).find((r) => r.direction === direction);
+				if (reservation && reservation.status === "Requested") return false;
+				const trip = trips.find((t) => t.direction === direction);
+				// Prefer the leg's own status; fall back to the person-level rollup for
+				// candidates we have not read trips for yet.
+				return REQUESTABLE_FRAPPE_STATUSES.has(trip ? trip.status : c.frappe_status);
+			});
+			const canRequest = requestable.length > 0;
+			const requestBtn = requestable
+				.map(
+					(direction) =>
+						`<button type="button" class="secondary tiny" data-request="${escapeHtml(c.id || c.name)}" data-direction="${escapeHtml(direction)}">Request ${escapeHtml(direction)}</button>`,
+				)
+				.join(" ");
 
 			const color = avatarColor(c.candidate_name || c.name || "?");
 			return `
@@ -656,7 +700,9 @@
 			try {
 				const res = await fetch(`/api/candidates/${encodeURIComponent(c.id || c.name)}/frappe-status`);
 				const body = await res.json();
-				return { ...c, frappe_status: body.status || null };
+				// `status` is now Frappe's rollup; `trips` is the per-leg truth the
+				// badges and buttons actually key on.
+				return { ...c, frappe_status: body.status || null, frappe_trips: body.trips || [] };
 			} catch { return c; }
 		}
 
@@ -683,6 +729,16 @@
 			} catch { dot.className = "dot down"; text.textContent = "offline"; }
 		}
 
+		const directionsSelect = document.getElementById("requested_directions");
+		const pickupField = document.getElementById("pickup_field");
+		function syncPickupField() {
+			const wanted = directionsSelect.value !== "Drop-off";
+			pickupField.style.display = wanted ? "" : "none";
+			if (!wanted) document.getElementById("pickup_location").value = "";
+		}
+		directionsSelect.addEventListener("change", syncPickupField);
+		syncPickupField();
+
 		form.addEventListener("submit", async (e) => {
 			e.preventDefault();
 			clearResult();
@@ -690,9 +746,16 @@
 			submitBtn.disabled = true;
 			submitBtn.innerHTML = `<span class="spinner"></span> Creating…`;
 
+			const directions = document.getElementById("requested_directions").value;
+			const pickup = document.getElementById("pickup_location").value.trim();
 			const payload = {
 				candidate_name: document.getElementById("candidate_name").value.trim(),
 				dropoff_location: document.getElementById("dropoff_location").value.trim(),
+				requested_directions: directions,
+				// Only sent when a pick-up was actually asked for. An empty string would
+				// be indistinguishable from "no pickup given" on the wire anyway, but
+				// omitting it keeps the payload honest about what was requested.
+				pickup_location: directions === "Drop-off" ? null : pickup || null,
 				phone: document.getElementById("phone").value.trim() || null,
 				priority: document.getElementById("priority").checked,
 			};
@@ -710,6 +773,7 @@
 					toast("ok", `Created ${payload.candidate_name}`);
 					renderPlaceCard(body.dropoff_place);
 					form.reset();
+					syncPickupField();
 					loadList();
 				} else {
 					showResult("error", `${res.status} ${res.statusText} — ${body.error?.message || body.message || "request failed"}`);
@@ -809,7 +873,11 @@
 			const requestBtn = e.target.closest("[data-request]");
 			if (!requestBtn) return;
 			const idOrName = requestBtn.getAttribute("data-request");
-			runAction(requestBtn, `/api/reservations/${encodeURIComponent(idOrName)}/request-reservation`, "Requesting…");
+			// The direction is required for a two-leg candidate; the API refuses an
+			// ambiguous request rather than picking a leg on the caller's behalf.
+			const direction = requestBtn.getAttribute("data-direction");
+			const query = direction ? `?direction=${encodeURIComponent(direction)}` : "";
+			runAction(requestBtn, `/api/reservations/${encodeURIComponent(idOrName)}/request-reservation${query}`, "Requesting…");
 		});
 
 		checkHealth();

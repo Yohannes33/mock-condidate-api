@@ -1,15 +1,24 @@
 import { httpError, jsonResponse } from "./errors.ts";
-import { getCandidateStatus } from "./frappe.ts";
+import { getCandidateTrips } from "./frappe.ts";
 import { resolvePlace } from "./place.ts";
 import { handleReadyForReservation, requestReservation } from "./reservation.ts";
 import * as store from "./store.ts";
 import * as settings from "./settings.ts";
-import type { Candidate, ReadyForReservationPayload, ReceiveCandidateRequest } from "./types.ts";
+import type {
+	Candidate,
+	LegDirection,
+	ReadyForReservationPayload,
+	ReceiveCandidateRequest,
+	RequestedDirections,
+} from "./types.ts";
+import { REQUESTED_DIRECTIONS } from "./types.ts";
 import { notifyCandidateCreated } from "./webhook.ts";
 
 const ALLOWED_FIELDS = new Set([
 	"candidate_name",
 	"dropoff_location",
+	"pickup_location",
+	"requested_directions",
 	"phone",
 	"id",
 	"priority",
@@ -155,11 +164,62 @@ function validateReceiveCandidate(
 		};
 	}
 
+	// Absent means "Drop-off": that was the only intake shape this mock ever sent, and
+	// Frappe defaults the same way, so an older caller keeps working untouched.
+	const rawDirections = body.requested_directions;
+	let requested_directions: RequestedDirections = "Drop-off";
+	if (rawDirections !== undefined && rawDirections !== null && rawDirections !== "") {
+		if (
+			typeof rawDirections !== "string" ||
+			!(REQUESTED_DIRECTIONS as string[]).includes(rawDirections)
+		) {
+			return {
+				ok: false,
+				status: 400,
+				code: "ValidationError",
+				message: `requested_directions must be one of: ${REQUESTED_DIRECTIONS.join(", ")}`,
+			};
+		}
+		requested_directions = rawDirections as RequestedDirections;
+	}
+
+	const pickup_location = body.pickup_location;
+	if (
+		pickup_location !== undefined &&
+		pickup_location !== null &&
+		typeof pickup_location !== "string"
+	) {
+		return {
+			ok: false,
+			status: 400,
+			code: "ValidationError",
+			message: "pickup_location must be a string",
+		};
+	}
+	const pickupTrimmed =
+		typeof pickup_location === "string" ? pickup_location.trim() || null : null;
+
+	// Refused rather than ignored. A pick-up address on a drop-off-only request is a
+	// contradiction, and silently dropping it would leave the caller believing they had
+	// booked a morning collection.
+	if (pickupTrimmed && requested_directions === "Drop-off") {
+		return {
+			ok: false,
+			status: 400,
+			code: "ValidationError",
+			message:
+				"pickup_location was given but requested_directions is 'Drop-off'; " +
+				"use 'Pick-up' or 'Both'",
+		};
+	}
+
 	return {
 		ok: true,
 		data: {
 			candidate_name: candidate_name.trim(),
 			dropoff_location: dropoff_location.trim(),
+			pickup_location: pickupTrimmed,
+			requested_directions,
 			phone: phone === undefined || phone === null ? null : (phone as string).trim() || null,
 			id: id === undefined || id === null ? null : (id as string).trim() || null,
 			priority: priority === undefined || priority === null ? false : priority,
@@ -191,7 +251,12 @@ async function handleReceiveCandidate(req: Request): Promise<Response> {
 		);
 	}
 
-	const dropoff_place = await resolvePlace(data.dropoff_location!);
+	// Resolved in parallel: two independent Google lookups, and the pick-up one is
+	// skipped entirely when no distinct address was given.
+	const [dropoff_place, pickup_place] = await Promise.all([
+		resolvePlace(data.dropoff_location!),
+		data.pickup_location ? resolvePlace(data.pickup_location) : Promise.resolve(null),
+	]);
 
 	const id = data.id ?? (await store.generateExternalId());
 
@@ -202,8 +267,11 @@ async function handleReceiveCandidate(req: Request): Promise<Response> {
 		phone: data.phone ?? null,
 		dropoff_location: data.dropoff_location!,
 		dropoff_place,
+		pickup_location: data.pickup_location ?? null,
+		pickup_place,
+		requested_directions: data.requested_directions as RequestedDirections,
 		created_at: new Date().toISOString(),
-		reservation: null,
+		reservations: [],
 		frappe_candidate: null,
 		priority: data.priority ?? false,
 	};
@@ -276,6 +344,13 @@ async function handleReadyForReservationPut(req: Request): Promise<Response> {
 	return withCors(jsonResponse(200, candidate));
 }
 
+/**
+ * Reports every leg's status, plus Frappe's one-word rollup.
+ *
+ * Still returns `status` alongside `trips` so the existing UI keeps rendering, but that
+ * value is now the server-computed rollup rather than a column read -- see
+ * `getCandidateTrips` for why the column is gone.
+ */
 async function handleFrappeStatus(idOrName: string): Promise<Response> {
 	const candidate =
 		(await store.get(idOrName)) ?? (await store.findByExternalId(idOrName));
@@ -283,22 +358,56 @@ async function handleFrappeStatus(idOrName: string): Promise<Response> {
 		return withCors(httpError(404, "NotFound", `Candidate '${idOrName}' not found`));
 	}
 	if (!candidate.frappe_candidate) {
-		return withCors(jsonResponse(200, { status: null }));
+		return withCors(jsonResponse(200, { status: null, trips: [] }));
 	}
 
-	const status = await getCandidateStatus(candidate.frappe_candidate);
-	return withCors(jsonResponse(200, { status }));
+	const result = await getCandidateTrips(candidate.frappe_candidate);
+	return withCors(
+		jsonResponse(200, {
+			status: result?.candidate_status ?? null,
+			trips: result?.trips ?? [],
+		}),
+	);
 }
 
-async function handleRequestReservation(idOrName: string): Promise<Response> {
+/**
+ * Requests the reservation for one leg.
+ *
+ * The direction comes from the query string (`?direction=Pick-up`). When it is absent
+ * and the candidate asked for a single direction, that one is used -- but a "Both"
+ * candidate must say which leg, because picking one for them would reserve a seat on a
+ * shuttle nobody chose.
+ */
+async function handleRequestReservation(idOrName: string, url: URL): Promise<Response> {
 	const candidate =
 		(await store.get(idOrName)) ?? (await store.findByExternalId(idOrName));
 	if (!candidate) {
 		return withCors(httpError(404, "NotFound", `Candidate '${idOrName}' not found`));
 	}
 
+	const requested = url.searchParams.get("direction");
+	let direction: LegDirection;
+	if (requested) {
+		if (requested !== "Drop-off" && requested !== "Pick-up") {
+			return withCors(
+				httpError(400, "ValidationError", `direction must be 'Drop-off' or 'Pick-up'`),
+			);
+		}
+		direction = requested;
+	} else if (candidate.requested_directions === "Both") {
+		return withCors(
+			httpError(
+				400,
+				"AmbiguousDirection",
+				"this candidate has two legs; pass ?direction=Drop-off or ?direction=Pick-up",
+			),
+		);
+	} else {
+		direction = candidate.requested_directions;
+	}
+
 	try {
-		const updated = await requestReservation(candidate);
+		const updated = await requestReservation(candidate, direction);
 		return withCors(jsonResponse(200, updated));
 	} catch (err) {
 		return withCors(
@@ -411,7 +520,7 @@ const server = Bun.serve({
 			const idOrName = decodeURIComponent(
 				path.slice("/api/reservations/".length, -"/request-reservation".length),
 			);
-			return handleRequestReservation(idOrName);
+			return handleRequestReservation(idOrName, url);
 		}
 
 		if (

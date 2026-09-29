@@ -1,3 +1,5 @@
+import type { TripView } from "./types.ts";
+
 const TIMEOUT_MS = 8000;
 
 /** Resolves a Frappe whitelisted method to a full URL, reusing WEBHOOK_URL's origin. */
@@ -59,38 +61,45 @@ export async function callFrappeMethod(
 	}
 }
 
-/** Reads a Frappe Candidate's live `status` field, e.g. to check for "Approved". */
-export async function getCandidateStatus(frappeCandidateName: string): Promise<string | null> {
-	const base = process.env.FRAPPE_BASE_URL ?? process.env.WEBHOOK_URL;
-	if (!base) return null;
+export type CandidateTrips = {
+	candidate: string | null;
+	candidate_name: string | null;
+	/** Frappe's rollup: the least-advanced live leg. One word for a list view. */
+	candidate_status: string | null;
+	trips: TripView[];
+};
 
-	let url: URL;
+/**
+ * Reads every leg of a Frappe Candidate, each with its own status and route.
+ *
+ * Replaces a `frappe.client.get_value` read of `Candidate.status`, which no longer
+ * exists -- that field was deleted when pick-up and drop-off became separate trips,
+ * because no single word describes a person whose pick-up is reserved and whose
+ * drop-off was denied.
+ *
+ * Worth knowing how that broke: `get_value` on a missing field does not error, it
+ * returns an empty result. So the old call reported "no status" for every candidate,
+ * silently and forever. Nothing here would have told us.
+ *
+ * `candidate_status` is still on the response for callers that only want the one-word
+ * summary -- computed server-side rather than re-derived here.
+ */
+export async function getCandidateTrips(
+	frappeCandidateName: string,
+): Promise<CandidateTrips | null> {
 	try {
-		url = new URL(base);
-	} catch {
+		const result = await callFrappeMethod(
+			"mmcy_fleet_management.api.dispatch.get_candidate_trips",
+			{ name: frappeCandidateName },
+		);
+		if (!result.ok) {
+			console.warn(`[frappe] get_candidate_trips non-2xx: ${result.status}`);
+			return null;
+		}
+		const body = result.body as { message?: CandidateTrips };
+		return body?.message ?? null;
+	} catch (err) {
+		console.warn(`[frappe] get_candidate_trips failed: ${(err as Error).message}`);
 		return null;
-	}
-	url.pathname = "/api/method/frappe.client.get_value";
-	url.search = "";
-	url.searchParams.set("doctype", "Candidate");
-	url.searchParams.set("fieldname", "status");
-	url.searchParams.set("filters", JSON.stringify({ name: frappeCandidateName }));
-
-	const headers: Record<string, string> = {};
-	const apiKey = process.env.API_KEY;
-	if (apiKey) headers["Authorization"] = `token ${apiKey}`;
-
-	const controller = new AbortController();
-	const timeout = setTimeout(() => controller.abort(), TIMEOUT_MS);
-
-	try {
-		const res = await fetch(url.toString(), { headers, signal: controller.signal });
-		if (!res.ok) return null;
-		const body = (await res.json()) as { message?: { status?: string } };
-		return body.message?.status ?? null;
-	} catch {
-		return null;
-	} finally {
-		clearTimeout(timeout);
 	}
 }
