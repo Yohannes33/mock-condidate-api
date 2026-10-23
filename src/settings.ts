@@ -31,10 +31,6 @@ export async function get(): Promise<RecruiterSettings | null> {
 }
 
 export async function set(email: string, name: string): Promise<RecruiterSettings> {
-	const existing = await read();
-	if (existing) {
-		throw new Error("recruiter settings already set");
-	}
 	const settings: RecruiterSettings = { email, name };
 	await write(settings);
 	return settings;
