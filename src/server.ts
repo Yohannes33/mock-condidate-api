@@ -1,6 +1,6 @@
 import { httpError, jsonResponse } from "./errors.ts";
 import { getCandidateTrips } from "./frappe.ts";
-import { MAX_SEARCH_RESULTS, resolvePlace, searchPlaces } from "./place.ts";
+import { getPlaceDetails, resolvePlace, suggestPlaces } from "./place.ts";
 import { handleReadyForReservation, requestReservation } from "./reservation.ts";
 import * as store from "./store.ts";
 import * as settings from "./settings.ts";
@@ -525,9 +525,22 @@ async function handleReset(): Promise<Response> {
 
 const SEARCH_MIN_CHARS = 2;
 const SEARCH_MAX_CHARS = 200;
-const SEARCH_DEFAULT_LIMIT = 5;
+// Google session tokens are opaque; the form sends a UUID. Anything else is dropped
+// rather than forwarded, so junk never reaches Google's billing sessions.
+const SESSION_TOKEN = /^[A-Za-z0-9_-]{1,64}$/;
+const PLACE_ID = /^[A-Za-z0-9_-]{1,512}$/;
 
-/** Live place suggestions for the form's location fields. */
+function sessionTokenFrom(url: URL): string | null {
+	const token = url.searchParams.get("session");
+	return token && SESSION_TOKEN.test(token) ? token : null;
+}
+
+function placeSearchFailure(result: { reason: "no_key" | "upstream_error"; message: string }): Response {
+	const status = result.reason === "no_key" ? 503 : 502;
+	return withCors(httpError(status, "PlaceSearchUnavailable", result.message));
+}
+
+/** Live suggestions (no coordinates) for the form's location fields. */
 async function handlePlaceSearch(url: URL): Promise<Response> {
 	const query = (url.searchParams.get("q") ?? "").trim();
 	if (query.length < SEARCH_MIN_CHARS || query.length > SEARCH_MAX_CHARS) {
@@ -539,17 +552,25 @@ async function handlePlaceSearch(url: URL): Promise<Response> {
 			),
 		);
 	}
-	const requested = Number(url.searchParams.get("limit") ?? SEARCH_DEFAULT_LIMIT);
-	const limit = Number.isInteger(requested)
-		? Math.min(Math.max(requested, 1), MAX_SEARCH_RESULTS)
-		: SEARCH_DEFAULT_LIMIT;
+	const result = await suggestPlaces(query, sessionTokenFrom(url));
+	if (!result.ok) return placeSearchFailure(result);
+	return withCors(jsonResponse(200, { suggestions: result.suggestions }));
+}
 
-	const result = await searchPlaces(query, limit);
-	if (!result.ok) {
-		const status = result.reason === "no_key" ? 503 : 502;
-		return withCors(httpError(status, "PlaceSearchUnavailable", result.message));
+/** Coordinates and address for the suggestion the user picked. */
+async function handlePlaceDetails(url: URL): Promise<Response> {
+	const placeId = (url.searchParams.get("place_id") ?? "").trim();
+	if (!PLACE_ID.test(placeId)) {
+		return withCors(httpError(400, "ValidationError", "place_id is required"));
 	}
-	return withCors(jsonResponse(200, { places: result.places }));
+	const result = await getPlaceDetails(placeId, sessionTokenFrom(url));
+	if (!result.ok) return placeSearchFailure(result);
+	if (!result.place) {
+		return withCors(
+			httpError(404, "NotFound", "No usable location inside Ethiopia for that place"),
+		);
+	}
+	return withCors(jsonResponse(200, result.place));
 }
 
 function handleHealth(): Response {
@@ -591,6 +612,7 @@ const server = Bun.serve({
 		if (path === "/api/method/receive_candidate") return handleReceiveCandidate(req);
 
 		if (path === "/api/places/search" && req.method === "GET") return handlePlaceSearch(url);
+		if (path === "/api/places/details" && req.method === "GET") return handlePlaceDetails(url);
 
 		if (path === "/api/method/frappe.client.get_list" && req.method === "GET") {
 			return handleList();

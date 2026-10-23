@@ -160,7 +160,6 @@
 		.suggestion[aria-selected="true"], .suggestion:hover { background: var(--brand-soft); }
 		.suggestion .s-name { font-size: 0.88rem; font-weight: 600; color: var(--text); }
 		.suggestion .s-addr { font-size: 0.78rem; color: var(--text-2); }
-		.suggestion .s-coords { font-size: 0.7rem; color: var(--text-3); font-family: ui-monospace, "SF Mono", Menlo, monospace; }
 		.suggestion-note { padding: 0.55rem 0.65rem; font-size: 0.8rem; color: var(--text-3); }
 		.suggestion-note.error { color: var(--red); }
 		.picked {
@@ -169,6 +168,7 @@
 			font-size: 0.78rem; color: #065f46; display: flex; gap: 0.45rem; align-items: flex-start;
 		}
 		.picked[hidden] { display: none; }
+		.picked.error { background: var(--red-soft); border-color: var(--red-border); color: #991b1b; }
 		.picked .p-text { flex: 1; min-width: 0; line-height: 1.4; }
 		.picked .p-coords { color: #047857; font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 0.7rem; }
 		.field .help { font-size: 0.72rem; color: var(--text-3); margin-top: 0.35rem; }
@@ -496,7 +496,7 @@
 									<ul class="suggestions" id="dropoff_suggestions" role="listbox" hidden></ul>
 								</div>
 								<div class="picked" id="dropoff_picked" hidden></div>
-								<div class="help" id="dropoff_help">Pick a suggestion to lock the exact place. Unpicked text goes to Google's top match.</div>
+								<div class="help" id="dropoff_help">Searches places in Ethiopia, nearest Addis Ababa first. Pick one to lock the exact spot.</div>
 							</div>
 							<!-- Only for "Both": a single pick-up trip uses the field above. -->
 							<div class="field" id="pickup_field" hidden>
@@ -842,23 +842,28 @@
 		const SEARCH_MIN_CHARS = 3;
 		const SEARCH_DEBOUNCE_MS = 350;
 
-		/** The text a picked place leaves in its input: name plus address, unless the address already leads with the name. */
-		function placeLabel(p) {
-			const name = p.display_name || "";
-			const addr = p.formatted_address || "";
-			if (!name) return addr;
-			if (!addr || addr.startsWith(name)) return addr || name;
-			return `${name}, ${addr}`;
+		/** The text a picked suggestion leaves in its input: its name, then the rest of the line. */
+		function suggestionLabel(s) {
+			return s.secondary_text ? `${s.display_name}, ${s.secondary_text}` : s.display_name;
 		}
 
 		function formatCoords(p) {
 			return `${Number(p.lat).toFixed(5)}, ${Number(p.lng).toFixed(5)}`;
 		}
 
+		/** One Google billing session per search: every keystroke plus the final pick share it. */
+		function newSessionToken() {
+			if (crypto.randomUUID) return crypto.randomUUID();
+			return Array.from(crypto.getRandomValues(new Uint8Array(16)), (b) => b.toString(16).padStart(2, "0")).join("");
+		}
+
 		/**
-		 * Live Google Places suggestions under a location input (`<prefix>_location`).
-		 * Picking one pins that exact place for create; editing the text afterwards
-		 * unpins it, so a stale pick can never ride along with different text.
+		 * Live place suggestions under a location input (`<prefix>_location`), limited to
+		 * Ethiopia and weighted toward Addis Ababa by the server.
+		 *
+		 * Suggestions carry no coordinates. Picking one fetches its location once, and
+		 * that exact place is sent on create; editing the text afterwards unpins it, so a
+		 * stale pick can never ride along with different text.
 		 */
 		function attachPlaceSearch(prefix) {
 			const input = document.getElementById(`${prefix}_location`);
@@ -869,7 +874,10 @@
 			let active = -1;
 			let picked = null;
 			let timer = null;
-			let controller = null;
+			let searchController = null;
+			let detailsController = null;
+			let pending = null;
+			let session = newSessionToken();
 			// Only the latest search may render; an older, slower response is dropped.
 			let latest = 0;
 
@@ -889,42 +897,82 @@
 				open();
 			}
 			function renderResults() {
-				if (!results.length) { showNote("No places found."); return; }
-				list.innerHTML = results.map((p, i) => `
+				if (!results.length) { showNote("No places found in Ethiopia."); return; }
+				list.innerHTML = results.map((s, i) => `
 					<li class="suggestion" role="option" id="${prefix}_opt_${i}" data-index="${i}" aria-selected="${i === active}">
-						<span class="s-name">${escapeHtml(p.display_name || p.formatted_address || "Unnamed place")}</span>
-						${p.formatted_address ? `<span class="s-addr">${escapeHtml(p.formatted_address)}</span>` : ""}
-						${p.lat != null && p.lng != null ? `<span class="s-coords">${escapeHtml(formatCoords(p))}</span>` : ""}
+						<span class="s-name">${escapeHtml(s.display_name)}</span>
+						${s.secondary_text ? `<span class="s-addr">${escapeHtml(s.secondary_text)}</span>` : ""}
 					</li>`).join("");
 				open();
 				if (active >= 0) input.setAttribute("aria-activedescendant", `${prefix}_opt_${active}`);
 				else input.removeAttribute("aria-activedescendant");
 			}
+			function showPickedNote(text, isError) {
+				helpEl.hidden = true;
+				pickedEl.hidden = false;
+				pickedEl.classList.toggle("error", Boolean(isError));
+				pickedEl.innerHTML = `<span class="p-text">${escapeHtml(text)}</span>`;
+			}
 			function setPicked(place) {
 				picked = place;
 				helpEl.hidden = Boolean(place);
 				pickedEl.hidden = !place;
+				pickedEl.classList.remove("error");
 				pickedEl.innerHTML = place
 					? `<span>📍</span><span class="p-text"><b>${escapeHtml(place.display_name || "Picked place")}</b>${place.formatted_address ? `<br>${escapeHtml(place.formatted_address)}` : ""}<br><span class="p-coords">${escapeHtml(formatCoords(place))}</span></span>`
 					: "";
 			}
+			function cancelDetails() {
+				detailsController?.abort();
+				detailsController = null;
+				pending = null;
+			}
 			function choose(index) {
-				const place = results[index];
-				if (!place) return;
-				input.value = placeLabel(place);
-				setPicked(place);
+				const suggestion = results[index];
+				if (!suggestion) return;
+				input.value = suggestionLabel(suggestion);
 				close();
+				cancelDetails();
+				setPicked(null);
+				showPickedNote("Locating…");
+				const controller = new AbortController();
+				detailsController = controller;
+				const url = `/api/places/details?place_id=${encodeURIComponent(suggestion.place_id)}&session=${encodeURIComponent(session)}`;
+				pending = (async () => {
+					try {
+						const res = await fetch(url, { signal: controller.signal });
+						const body = await res.json();
+						if (controller.signal.aborted) return;
+						if (!res.ok) {
+							showPickedNote(`Couldn't locate that place (${body.message || res.status}). Pick another, or create to resolve the text.`, true);
+							return;
+						}
+						setPicked({
+							place_id: body.place_id,
+							display_name: suggestion.display_name,
+							formatted_address: body.formatted_address,
+							lat: body.lat,
+							lng: body.lng,
+						});
+					} catch (err) {
+						if (err.name !== "AbortError") showPickedNote(`Couldn't locate that place: ${err.message}`, true);
+					} finally {
+						if (detailsController === controller) { detailsController = null; pending = null; }
+						// The pick closes this billing session; the next search starts a new one.
+						session = newSessionToken();
+					}
+				})();
 			}
 			async function search(query) {
-				controller?.abort();
-				controller = new AbortController();
+				searchController?.abort();
+				searchController = new AbortController();
 				const mine = ++latest;
 				try {
-					const res = await fetch(`/api/places/search?q=${encodeURIComponent(query)}`, { signal: controller.signal });
+					const res = await fetch(`/api/places/search?q=${encodeURIComponent(query)}&session=${encodeURIComponent(session)}`, { signal: searchController.signal });
 					const body = await res.json();
 					if (mine !== latest) return;
 					if (!res.ok) { showNote(`Search unavailable: ${body.message || res.status}`, true); return; }
-					results = (body.places || []).filter((p) => p.place_id && p.lat != null && p.lng != null);
+					results = body.suggestions || [];
 					active = -1;
 					renderResults();
 				} catch (err) {
@@ -932,26 +980,25 @@
 					showNote(`Search failed: ${err.message}`, true);
 				}
 			}
-			function reset() {
+			function stopSearching() {
 				clearTimeout(timer);
-				controller?.abort();
+				searchController?.abort();
 				latest++;
 				results = [];
 				close();
+			}
+			function reset() {
+				stopSearching();
+				cancelDetails();
 				setPicked(null);
 			}
 
 			input.addEventListener("input", () => {
+				cancelDetails();
 				setPicked(null);
-				clearTimeout(timer);
 				const query = input.value.trim();
-				if (query.length < SEARCH_MIN_CHARS) {
-					controller?.abort();
-					latest++;
-					results = [];
-					close();
-					return;
-				}
+				if (query.length < SEARCH_MIN_CHARS) { stopSearching(); return; }
+				clearTimeout(timer);
 				showNote("Searching…");
 				timer = setTimeout(() => search(query), SEARCH_DEBOUNCE_MS);
 			});
@@ -966,8 +1013,7 @@
 					document.getElementById(`${prefix}_opt_${active}`)?.scrollIntoView({ block: "nearest" });
 				} else if (e.key === "Enter" && !list.hidden) {
 					// Enter in an open list picks rather than submitting half-typed text;
-					// with nothing highlighted it takes the top match, which is what an
-					// unpicked submit would resolve to anyway.
+					// with nothing highlighted it takes the top suggestion.
 					e.preventDefault();
 					choose(active >= 0 ? active : 0);
 				}
@@ -981,7 +1027,12 @@
 				if (option) choose(Number(option.dataset.index));
 			});
 
-			return { getPicked: () => picked, reset };
+			return {
+				getPicked: () => picked,
+				/** Resolves once a pick that is still being located has finished. */
+				settled: () => pending ?? Promise.resolve(),
+				reset,
+			};
 		}
 
 		const dropoffSearch = attachPlaceSearch("dropoff");
@@ -1027,6 +1078,8 @@
 			submitBtn.disabled = true;
 			submitBtn.innerHTML = `<span class="spinner"></span> Creating…`;
 
+			// A place picked a moment ago may still be fetching its coordinates.
+			await Promise.all([dropoffSearch.settled(), pickupSearch.settled()]);
 			const directions = selectedDirections();
 			const pickup = directions === "Both" ? document.getElementById("pickup_location").value.trim() : "";
 			const payload = {
