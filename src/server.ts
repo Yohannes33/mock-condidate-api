@@ -1,6 +1,6 @@
 import { httpError, jsonResponse } from "./errors.ts";
 import { getCandidateTrips } from "./frappe.ts";
-import { resolvePlace } from "./place.ts";
+import { MAX_SEARCH_RESULTS, resolvePlace, searchPlaces } from "./place.ts";
 import { handleReadyForReservation, requestReservation } from "./reservation.ts";
 import * as store from "./store.ts";
 import * as settings from "./settings.ts";
@@ -10,6 +10,7 @@ import type {
 	ReadyForReservationPayload,
 	ReceiveCandidateRequest,
 	RequestedDirections,
+	ResolvedPlace,
 } from "./types.ts";
 import { REQUESTED_DIRECTIONS } from "./types.ts";
 import { notifyCandidateCreated } from "./webhook.ts";
@@ -18,6 +19,8 @@ const ALLOWED_FIELDS = new Set([
 	"candidate_name",
 	"dropoff_location",
 	"pickup_location",
+	"dropoff_place",
+	"pickup_place",
 	"requested_directions",
 	"phone",
 	"id",
@@ -82,6 +85,54 @@ function parseQuery(url: URL): Record<string, unknown> {
 	const out: Record<string, unknown> = {};
 	for (const [k, v] of url.searchParams.entries()) out[k] = v;
 	return out;
+}
+
+type FieldError = { ok: false; status: number; code: string; message: string };
+
+function fieldError(message: string): FieldError {
+	return { ok: false, status: 400, code: "ValidationError", message };
+}
+
+function isCoordinate(value: unknown, limit: number): value is number {
+	return typeof value === "number" && Number.isFinite(value) && Math.abs(value) <= limit;
+}
+
+/**
+ * Validates a place the caller already picked (the form's search dropdown) so create
+ * can use it as-is instead of re-searching the text, which may rank a different place
+ * first. Absent means "resolve the location text", exactly as before.
+ */
+function parsePickedPlace(
+	value: unknown,
+	field: string,
+): { ok: true; place: ResolvedPlace | null } | FieldError {
+	if (value === undefined || value === null) return { ok: true, place: null };
+	if (typeof value !== "object" || Array.isArray(value)) {
+		return fieldError(`${field} must be an object`);
+	}
+	const raw = value as Record<string, unknown>;
+	if (typeof raw.place_id !== "string" || !raw.place_id.trim()) {
+		return fieldError(`${field}.place_id is required`);
+	}
+	for (const key of ["display_name", "formatted_address"]) {
+		const v = raw[key];
+		if (v !== undefined && v !== null && typeof v !== "string") {
+			return fieldError(`${field}.${key} must be a string`);
+		}
+	}
+	if (!isCoordinate(raw.lat, 90) || !isCoordinate(raw.lng, 180)) {
+		return fieldError(`${field} needs numeric lat (±90) and lng (±180)`);
+	}
+	return {
+		ok: true,
+		place: {
+			place_id: raw.place_id.trim(),
+			display_name: (raw.display_name as string | null | undefined) ?? null,
+			formatted_address: (raw.formatted_address as string | null | undefined) ?? null,
+			lat: raw.lat,
+			lng: raw.lng,
+		},
+	};
 }
 
 function validateReceiveCandidate(
@@ -213,12 +264,24 @@ function validateReceiveCandidate(
 		};
 	}
 
+	const dropoffPicked = parsePickedPlace(body.dropoff_place, "dropoff_place");
+	if (!dropoffPicked.ok) return dropoffPicked;
+	const pickupPicked = parsePickedPlace(body.pickup_place, "pickup_place");
+	if (!pickupPicked.ok) return pickupPicked;
+	// A picked place describes its location text; without the text it has nothing to
+	// describe, and Frappe keys its Place records on that text.
+	if (pickupPicked.place && !pickupTrimmed) {
+		return fieldError("pickup_place was given without pickup_location");
+	}
+
 	return {
 		ok: true,
 		data: {
 			candidate_name: candidate_name.trim(),
 			dropoff_location: dropoff_location.trim(),
 			pickup_location: pickupTrimmed,
+			dropoff_place: dropoffPicked.place,
+			pickup_place: pickupPicked.place,
 			requested_directions,
 			phone: phone === undefined || phone === null ? null : (phone as string).trim() || null,
 			id: id === undefined || id === null ? null : (id as string).trim() || null,
@@ -253,9 +316,13 @@ async function handleReceiveCandidate(req: Request): Promise<Response> {
 
 	// Resolved in parallel: two independent Google lookups, and the pick-up one is
 	// skipped entirely when no distinct address was given.
+	// A place picked from the form's search is used as-is; only bare text is looked up.
+	// Resolved in parallel: two independent Google lookups, and the pick-up one is
+	// skipped entirely when no distinct address was given.
 	const [dropoff_place, pickup_place] = await Promise.all([
-		resolvePlace(data.dropoff_location!),
-		data.pickup_location ? resolvePlace(data.pickup_location) : Promise.resolve(null),
+		data.dropoff_place ?? resolvePlace(data.dropoff_location!),
+		data.pickup_place ??
+			(data.pickup_location ? resolvePlace(data.pickup_location) : Promise.resolve(null)),
 	]);
 
 	const id = data.id ?? (await store.generateExternalId());
@@ -456,6 +523,35 @@ async function handleReset(): Promise<Response> {
 	return withCors(jsonResponse(200, { data: items, reset: true }));
 }
 
+const SEARCH_MIN_CHARS = 2;
+const SEARCH_MAX_CHARS = 200;
+const SEARCH_DEFAULT_LIMIT = 5;
+
+/** Live place suggestions for the form's location fields. */
+async function handlePlaceSearch(url: URL): Promise<Response> {
+	const query = (url.searchParams.get("q") ?? "").trim();
+	if (query.length < SEARCH_MIN_CHARS || query.length > SEARCH_MAX_CHARS) {
+		return withCors(
+			httpError(
+				400,
+				"ValidationError",
+				`q must be ${SEARCH_MIN_CHARS}-${SEARCH_MAX_CHARS} characters`,
+			),
+		);
+	}
+	const requested = Number(url.searchParams.get("limit") ?? SEARCH_DEFAULT_LIMIT);
+	const limit = Number.isInteger(requested)
+		? Math.min(Math.max(requested, 1), MAX_SEARCH_RESULTS)
+		: SEARCH_DEFAULT_LIMIT;
+
+	const result = await searchPlaces(query, limit);
+	if (!result.ok) {
+		const status = result.reason === "no_key" ? 503 : 502;
+		return withCors(httpError(status, "PlaceSearchUnavailable", result.message));
+	}
+	return withCors(jsonResponse(200, { places: result.places }));
+}
+
 function handleHealth(): Response {
 	return withCors(jsonResponse(200, { ok: true }));
 }
@@ -493,6 +589,8 @@ const server = Bun.serve({
 		if (path === "/health" && req.method === "GET") return handleHealth();
 
 		if (path === "/api/method/receive_candidate") return handleReceiveCandidate(req);
+
+		if (path === "/api/places/search" && req.method === "GET") return handlePlaceSearch(url);
 
 		if (path === "/api/method/frappe.client.get_list" && req.method === "GET") {
 			return handleList();

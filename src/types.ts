@@ -95,6 +95,9 @@ export type ReceiveCandidateRequest = {
 	id?: string | null;
 	dropoff_location?: string | null;
 	pickup_location?: string | null;
+	/** Set when the caller picked the place from search; skips re-resolving the text. */
+	dropoff_place?: ResolvedPlace | null;
+	pickup_place?: ResolvedPlace | null;
 	requested_directions?: string | null;
 	priority?: boolean | null;
 };

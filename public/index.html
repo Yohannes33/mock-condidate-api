@@ -14,7 +14,8 @@
 			--border-strong: #d3d6dd;
 			--text: #16181d;
 			--text-2: #5c6270;
-			--text-3: #8b909c;
+			/* 4.9:1 on white; the old #8b909c failed AA for hints and help text. */
+			--text-3: #6b7180;
 			--brand: #4f46e5;
 			--brand-hover: #4338ca;
 			--brand-soft: #eef0ff;
@@ -29,6 +30,9 @@
 			--shadow: 0 1px 2px rgba(16, 24, 40, 0.04), 0 1px 3px rgba(16, 24, 40, 0.08);
 			--shadow-lg: 0 10px 30px rgba(16, 24, 40, 0.12);
 			--radius: 12px;
+			--z-sticky: 20;
+			--z-dropdown: 30;
+			--z-toast: 40;
 		}
 		* { box-sizing: border-box; }
 		html, body { height: 100%; }
@@ -51,7 +55,7 @@
 		.app-header {
 			position: sticky;
 			top: 0;
-			z-index: 20;
+			z-index: var(--z-sticky);
 			background: var(--bg);
 			color: #fff;
 			border-bottom: 1px solid rgba(255,255,255,0.08);
@@ -67,12 +71,11 @@
 		.logo {
 			width: 34px; height: 34px;
 			border-radius: 9px;
-			background: linear-gradient(135deg, #6366f1, #4f46e5);
+			background: var(--brand);
 			display: grid;
 			place-items: center;
 			font-weight: 700;
 			font-size: 1rem;
-			box-shadow: 0 2px 8px rgba(79,70,229,0.5);
 		}
 		.app-header .title { font-size: 1.02rem; font-weight: 600; letter-spacing: -0.01em; }
 		.app-header .title small { display: block; font-weight: 400; font-size: 0.75rem; color: rgba(255,255,255,0.55); margin-top: 1px; }
@@ -92,19 +95,24 @@
 			padding: 0.3rem 0.6rem; border-radius: 7px;
 		}
 		.ghost-link:hover { background: rgba(255,255,255,0.08); color: #fff; }
+		.status-pill, .ghost-link { white-space: nowrap; }
+		@media (max-width: 560px) {
+			.app-header .inner { padding: 0.75rem 1rem; }
+			.app-header .title small { display: none; }
+			.app-header .title { white-space: nowrap; }
+		}
 
 		/* ---- Layout ---- */
 		.layout {
-			max-width: 1080px;
+			max-width: 720px;
 			margin: 1.5rem auto;
 			padding: 0 1.5rem 3rem;
-			display: grid;
-			grid-template-columns: 380px 1fr;
-			gap: 1.5rem;
-			align-items: start;
+			display: flex;
+			flex-direction: column;
+			gap: 1.25rem;
 		}
-		@media (max-width: 860px) {
-			.layout { grid-template-columns: 1fr; }
+		@media (max-width: 560px) {
+			.layout { padding: 0 1rem 2.5rem; }
 		}
 
 		.card {
@@ -125,8 +133,46 @@
 		.card-head .sub { font-size: 0.75rem; color: var(--text-3); margin-top: 2px; }
 		.card-body { padding: 1.15rem; }
 
-		.left-col { position: sticky; top: 78px; display: flex; flex-direction: column; gap: 1.25rem; }
-		@media (max-width: 860px) { .left-col { position: static; } }
+		/* Collapsible cards: the summary doubles as the card header. */
+		details.card > summary { list-style: none; cursor: pointer; user-select: none; }
+		details.card > summary::-webkit-details-marker { display: none; }
+		details.card:not([open]) > summary { border-bottom: none; }
+		details.card > summary .chev { color: var(--text-3); transition: transform .15s; margin-right: 0.45rem; }
+		details.card[open] > summary .chev { transform: rotate(90deg); }
+		details.card > summary h2 { display: flex; align-items: center; }
+		details.card > summary:focus-visible { outline: 2px solid var(--brand); outline-offset: -2px; border-radius: var(--radius); }
+		.list-toolbar { display: flex; align-items: center; justify-content: flex-end; gap: 0.5rem; margin-bottom: 0.9rem; }
+		.recruiter-summary { font-size: 0.78rem; color: var(--text-2); text-align: right; }
+
+		/* ---- Place search ---- */
+		.combo { position: relative; }
+		.suggestions {
+			position: absolute; z-index: var(--z-dropdown); left: 0; right: 0; top: calc(100% + 4px);
+			margin: 0; padding: 0.3rem; list-style: none;
+			background: #fff; border: 1px solid var(--border-strong); border-radius: 10px;
+			box-shadow: var(--shadow-lg); max-height: 300px; overflow-y: auto;
+		}
+		.suggestions[hidden] { display: none; }
+		.suggestion {
+			padding: 0.5rem 0.65rem; border-radius: 7px; cursor: pointer;
+			display: flex; flex-direction: column; gap: 2px;
+		}
+		.suggestion[aria-selected="true"], .suggestion:hover { background: var(--brand-soft); }
+		.suggestion .s-name { font-size: 0.88rem; font-weight: 600; color: var(--text); }
+		.suggestion .s-addr { font-size: 0.78rem; color: var(--text-2); }
+		.suggestion .s-coords { font-size: 0.7rem; color: var(--text-3); font-family: ui-monospace, "SF Mono", Menlo, monospace; }
+		.suggestion-note { padding: 0.55rem 0.65rem; font-size: 0.8rem; color: var(--text-3); }
+		.suggestion-note.error { color: var(--red); }
+		.picked {
+			margin-top: 0.45rem; padding: 0.5rem 0.65rem; border-radius: 8px;
+			background: var(--green-soft); border: 1px solid var(--green-border);
+			font-size: 0.78rem; color: #065f46; display: flex; gap: 0.45rem; align-items: flex-start;
+		}
+		.picked[hidden] { display: none; }
+		.picked .p-text { flex: 1; min-width: 0; line-height: 1.4; }
+		.picked .p-coords { color: #047857; font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 0.7rem; }
+		.field .help { font-size: 0.72rem; color: var(--text-3); margin-top: 0.35rem; }
+		.field .help[hidden] { display: none; }
 
 		/* ---- Form ---- */
 		.field { margin-bottom: 0.9rem; }
@@ -137,7 +183,7 @@
 		}
 		.field .hint { font-size: 0.68rem; font-weight: 500; color: var(--text-3); text-transform: uppercase; letter-spacing: 0.03em; }
 		.field .hint.req { color: var(--brand); }
-		.field input {
+		.field input, .field select {
 			width: 100%;
 			padding: 0.6rem 0.75rem;
 			border: 1px solid var(--border-strong);
@@ -147,18 +193,49 @@
 			background: var(--surface);
 			transition: border-color .12s, box-shadow .12s, background .12s;
 		}
-		.field input:focus {
+		.field input::placeholder { color: var(--text-3); opacity: 1; }
+		button:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; }
+		.field input:focus, .field select:focus {
 			outline: none;
 			background: #fff;
 			border-color: var(--brand);
 			box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.14);
 		}
-		.row { display: flex; gap: 0.75rem; }
-		.row .field { flex: 1; }
+		.row { display: flex; gap: 0.75rem; flex-wrap: wrap; }
+		.row .field { flex: 1 1 220px; margin-bottom: 0; }
+
+		.create-form { display: flex; flex-direction: column; gap: 1.5rem; }
+		.group { border: 0; margin: 0; padding: 0; min-width: 0; display: flex; flex-direction: column; gap: 0.9rem; }
+		.group > legend {
+			padding: 0; margin-bottom: 0.9rem;
+			font-size: 0.85rem; font-weight: 600; color: var(--text);
+		}
+		.group .field { margin-bottom: 0; }
+		.create-foot { display: flex; flex-direction: column; gap: 0.6rem; padding-top: 1.25rem; border-top: 1px solid var(--border); }
+		.create-foot .note { font-size: 0.75rem; color: var(--text-2); text-align: center; }
+
+		/* Directions: native radios styled as a segmented control, so arrow keys and
+		   screen readers behave exactly like a radio group. */
+		.segmented {
+			display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px;
+			padding: 4px; border-radius: 10px; background: var(--surface-2);
+			border: 1px solid var(--border);
+		}
+		.segmented label { position: relative; display: block; }
+		.segmented input { position: absolute; opacity: 0; inset: 0; margin: 0; cursor: pointer; }
+		.segmented span {
+			display: block; text-align: center; padding: 0.5rem 0.4rem; border-radius: 7px;
+			font-size: 0.85rem; font-weight: 500; color: var(--text-2);
+			transition: background .15s, color .15s, box-shadow .15s;
+		}
+		.segmented input:hover + span { color: var(--text); }
+		.segmented input:checked + span { background: #fff; color: var(--brand); font-weight: 600; box-shadow: var(--shadow); }
+		.segmented input:focus-visible + span { outline: 2px solid var(--brand); outline-offset: 1px; }
+		.directions-help { font-size: 0.78rem; color: var(--text-2); margin: -0.3rem 0 0; }
 
 		.field.checkbox {
-			display: flex; align-items: center; justify-content: space-between;
-			padding: 0.55rem 0.75rem; margin-bottom: 0.9rem;
+			display: flex; align-items: center; justify-content: space-between; gap: 1rem;
+			padding: 0.65rem 0.75rem; margin-bottom: 0; cursor: pointer;
 			border: 1px solid var(--border-strong); border-radius: 8px;
 			background: var(--surface);
 		}
@@ -345,22 +422,32 @@
 		}
 
 		/* ---- Toast ---- */
-		#toast-wrap { position: fixed; bottom: 1.25rem; right: 1.25rem; z-index: 50; display: flex; flex-direction: column; gap: 0.5rem; }
+		#toast-wrap { position: fixed; bottom: 1.25rem; right: 1.25rem; z-index: var(--z-toast); display: flex; flex-direction: column; gap: 0.5rem; }
 		.toast {
 			background: #16181d; color: #fff; padding: 0.7rem 0.95rem; border-radius: 10px;
 			font-size: 0.85rem; box-shadow: var(--shadow-lg); display: flex; align-items: center; gap: 0.55rem;
 			animation: slidein .2s ease; max-width: 320px;
 		}
-		.toast.ok { border-left: 3px solid var(--green); }
-		.toast.err { border-left: 3px solid var(--red); }
+		.toast .t-ico {
+			width: 18px; height: 18px; border-radius: 50%; flex: none;
+			display: grid; place-items: center; font-size: 0.7rem; font-weight: 700;
+		}
+		.toast.ok .t-ico { background: var(--green); }
+		.toast.err .t-ico { background: var(--red); }
 		@keyframes slidein { from { transform: translateX(20px); opacity: 0; } }
+		@media (prefers-reduced-motion: reduce) {
+			*, *::before, *::after { transition-duration: 0.01ms !important; }
+			.toast { animation: none; }
+			.sk-box { animation: none; }
+			.spinner { animation-duration: 1.6s; }
+		}
 	</style>
 </head>
 <body>
 	<header class="app-header">
 		<div class="inner">
 			<div class="logo">MC</div>
-			<div class="title">Mock Candidates API<small>local development mock &middot; Frappe-compatible</small></div>
+			<div class="title">Mock Candidates API<small>Recruiter-side mock for the Fleet app</small></div>
 			<div class="header-actions">
 				<span class="status-pill"><span class="dot" id="health-dot"></span><span id="health-text">checking…</span></span>
 				<a class="ghost-link" href="/api/method/frappe.client.get_list?doctype=Candidate" target="_blank">JSON API ↗</a>
@@ -369,53 +456,76 @@
 	</header>
 
 	<main class="layout">
-		<!-- LEFT: create form -->
-		<div class="left-col">
-			<section class="card">
+			<section class="card" aria-labelledby="create-title">
 				<div class="card-head">
 					<div>
-						<h2>New candidate</h2>
-						<div class="sub">POST <code>/api/method/receive_candidate</code></div>
+						<h2 id="create-title">New candidate</h2>
+						<div class="sub">Sent to Fleet through <code>receive_candidate</code></div>
 					</div>
 				</div>
 				<div class="card-body">
-					<form id="form">
-						<div class="field">
-							<label for="candidate_name">Candidate name <span class="hint req">required</span></label>
-							<input id="candidate_name" name="candidate_name" type="text" placeholder="Jane Doe" required />
-						</div>
-						<div class="field">
-							<label for="requested_directions">Directions <span class="hint">default Drop-off</span></label>
-							<select id="requested_directions" name="requested_directions">
-								<option value="Drop-off" selected>Drop-off only</option>
-								<option value="Pick-up">Pick-up only</option>
-								<option value="Both">Both &mdash; two separate trips</option>
-							</select>
-						</div>
-						<div class="field">
-							<label for="dropoff_location">Dropoff location <span class="hint req">required</span></label>
-							<input id="dropoff_location" name="dropoff_location" type="text" placeholder="123 Market St, San Francisco" required />
-						</div>
-						<!-- Hidden for "Drop-off only", where a pickup address is a contradiction
-						     the API rejects rather than silently ignores. -->
-						<div class="field" id="pickup_field" style="display:none">
-							<label for="pickup_location">Pickup location <span class="hint">optional &middot; defaults to the dropoff place</span></label>
-							<input id="pickup_location" name="pickup_location" type="text" placeholder="Leave blank to collect from the dropoff place" />
-						</div>
-						<div class="field">
-							<label for="phone">Phone <span class="hint">optional</span></label>
-							<input id="phone" name="phone" type="tel" placeholder="+1 555…" />
-						</div>
-						<div class="field checkbox">
+					<form id="form" class="create-form">
+						<fieldset class="group">
+							<legend>Candidate</legend>
+							<div class="row">
+								<div class="field">
+									<label for="candidate_name">Name <span class="hint req">required</span></label>
+									<input id="candidate_name" name="candidate_name" type="text" placeholder="Jane Doe" autocomplete="off" required />
+								</div>
+								<div class="field">
+									<label for="phone">Phone <span class="hint">optional</span></label>
+									<input id="phone" name="phone" type="tel" placeholder="+251 9…" autocomplete="off" />
+								</div>
+							</div>
+						</fieldset>
+
+						<fieldset class="group">
+							<legend>Trips</legend>
+							<div class="segmented">
+								<label><input type="radio" name="requested_directions" value="Drop-off" checked /><span>Drop-off</span></label>
+								<label><input type="radio" name="requested_directions" value="Pick-up" /><span>Pick-up</span></label>
+								<label><input type="radio" name="requested_directions" value="Both" /><span>Both</span></label>
+							</div>
+							<p class="directions-help" id="directions_help" aria-live="polite"></p>
+
+							<div class="field">
+								<label for="dropoff_location"><span id="dropoff_label">Drop-off location</span> <span class="hint req">required</span></label>
+								<div class="combo">
+									<input id="dropoff_location" name="dropoff_location" type="text" placeholder="Start typing, e.g. Edna Mall" required
+										autocomplete="off" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="dropoff_suggestions" aria-describedby="dropoff_help" />
+									<ul class="suggestions" id="dropoff_suggestions" role="listbox" hidden></ul>
+								</div>
+								<div class="picked" id="dropoff_picked" hidden></div>
+								<div class="help" id="dropoff_help">Pick a suggestion to lock the exact place. Unpicked text goes to Google's top match.</div>
+							</div>
+							<!-- Only for "Both": a single pick-up trip uses the field above. -->
+							<div class="field" id="pickup_field" hidden>
+								<label for="pickup_location">Pick-up location <span class="hint">optional</span></label>
+								<div class="combo">
+									<input id="pickup_location" name="pickup_location" type="text" placeholder="Leave blank to use the drop-off place"
+										autocomplete="off" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="pickup_suggestions" aria-describedby="pickup_help" />
+									<ul class="suggestions" id="pickup_suggestions" role="listbox" hidden></ul>
+								</div>
+								<div class="picked" id="pickup_picked" hidden></div>
+								<div class="help" id="pickup_help">Only needed when the pick-up point differs from the drop-off place.</div>
+							</div>
+						</fieldset>
+
+						<label class="field checkbox" for="priority">
 							<span class="checkbox-label">
-								Priority <span class="hint">optional · default off</span>
+								Priority
+								<span class="hint">Matched before other waiting candidates</span>
 							</span>
-							<label class="switch" title="Mark candidate as priority">
+							<span class="switch">
 								<input id="priority" name="priority" type="checkbox" />
 								<span class="slider"></span>
-							</label>
+							</span>
+						</label>
+
+						<div class="create-foot">
+							<button type="submit" id="submit-btn" class="block">Create candidate</button>
+							<div class="note">Saved here first, then sent to Fleet. Its Fleet ID appears on the card below once Fleet accepts it.</div>
 						</div>
-						<button type="submit" id="submit-btn" class="block">Create candidate</button>
 					</form>
 					<div id="result" class="result"></div>
 					<div id="place-card" class="place-card"></div>
@@ -423,13 +533,15 @@
 				</div>
 			</section>
 
-			<section class="card">
-				<div class="card-head">
+			<!-- Shared by every tester, so it stays folded away from the create flow. -->
+			<details class="card" id="recruiter-section">
+				<summary class="card-head">
 					<div>
-						<h2>Email recipient</h2>
-						<div class="sub">Recruiter notified via webhook <code>POST /api/settings/recruiter</code></div>
+						<h2><span class="chev">▸</span>Email recipient</h2>
+						<div class="sub">Shared by everyone using this mock &middot; <code>POST /api/settings/recruiter</code></div>
 					</div>
-				</div>
+					<span class="recruiter-summary" id="recruiter-summary"></span>
+				</summary>
 				<div class="card-body">
 					<div id="recruiter-current" class="recruiter-current"></div>
 					<form id="recruiter-form">
@@ -445,28 +557,26 @@
 					</form>
 					<div id="recruiter-result" class="result"></div>
 				</div>
-			</section>
-		</div>
+			</details>
 
-		<!-- RIGHT: candidate list -->
-		<section class="card">
-			<div class="card-head">
-				<div>
-					<h2>Candidates <span class="count-badge" id="count" style="display:none">0</span></h2>
-					<div class="sub">Live from the running mock store</div>
+			<details class="card" id="candidates-section" open>
+				<summary class="card-head">
+					<div>
+						<h2><span class="chev">▸</span>Candidates <span class="count-badge" id="count" style="display:none">0</span></h2>
+						<div class="sub">Live from the running mock store</div>
+					</div>
+				</summary>
+				<div class="card-body">
+					<div class="list-toolbar">
+						<span class="search">
+							<span class="ico">⌕</span>
+							<input id="search" type="text" placeholder="Filter…" />
+						</span>
+						<button type="button" class="secondary tiny" id="refresh-btn">↻ Refresh</button>
+					</div>
+					<div id="list"></div>
 				</div>
-				<div class="list-tools">
-					<span class="search">
-						<span class="ico">⌕</span>
-						<input id="search" type="text" placeholder="Filter…" />
-					</span>
-					<button type="button" class="secondary tiny" id="refresh-btn">↻ Refresh</button>
-				</div>
-			</div>
-			<div class="card-body">
-				<div id="list"></div>
-			</div>
-		</section>
+			</details>
 	</main>
 
 	<div id="toast-wrap"></div>
@@ -550,7 +660,7 @@
 			const wrap = document.getElementById("toast-wrap");
 			const el = document.createElement("div");
 			el.className = `toast ${kind}`;
-			el.innerHTML = `<span>${kind === "ok" ? "✓" : "✕"}</span><span>${escapeHtml(msg)}</span>`;
+			el.innerHTML = `<span class="t-ico" aria-hidden="true">${kind === "ok" ? "✓" : "✕"}</span><span>${escapeHtml(msg)}</span>`;
 			wrap.appendChild(el);
 			const id = ++toastId;
 			setTimeout(() => { el.style.transition = "opacity .3s, transform .3s"; el.style.opacity = "0"; el.style.transform = "translateX(20px)"; setTimeout(() => el.remove(), 300); }, 3200 + id * 0);
@@ -676,7 +786,7 @@
 			countEl.textContent = allItems.length;
 
 			if (allItems.length === 0) {
-				listEl.innerHTML = `<div class="empty"><div class="t">No candidates yet</div><div class="s">Create one using the form on the left.</div></div>`;
+				listEl.innerHTML = `<div class="empty"><div class="t">No candidates yet</div><div class="s">Create one using the form above.</div></div>`;
 			} else if (items.length === 0) {
 				listEl.innerHTML = `<div class="empty"><div class="t">No matches for “${escapeHtml(searchEl.value)}”</div></div>`;
 			} else {
@@ -729,15 +839,186 @@
 			} catch { dot.className = "dot down"; text.textContent = "offline"; }
 		}
 
-		const directionsSelect = document.getElementById("requested_directions");
-		const pickupField = document.getElementById("pickup_field");
-		function syncPickupField() {
-			const wanted = directionsSelect.value !== "Drop-off";
-			pickupField.style.display = wanted ? "" : "none";
-			if (!wanted) document.getElementById("pickup_location").value = "";
+		const SEARCH_MIN_CHARS = 3;
+		const SEARCH_DEBOUNCE_MS = 350;
+
+		/** The text a picked place leaves in its input: name plus address, unless the address already leads with the name. */
+		function placeLabel(p) {
+			const name = p.display_name || "";
+			const addr = p.formatted_address || "";
+			if (!name) return addr;
+			if (!addr || addr.startsWith(name)) return addr || name;
+			return `${name}, ${addr}`;
 		}
-		directionsSelect.addEventListener("change", syncPickupField);
-		syncPickupField();
+
+		function formatCoords(p) {
+			return `${Number(p.lat).toFixed(5)}, ${Number(p.lng).toFixed(5)}`;
+		}
+
+		/**
+		 * Live Google Places suggestions under a location input (`<prefix>_location`).
+		 * Picking one pins that exact place for create; editing the text afterwards
+		 * unpins it, so a stale pick can never ride along with different text.
+		 */
+		function attachPlaceSearch(prefix) {
+			const input = document.getElementById(`${prefix}_location`);
+			const list = document.getElementById(`${prefix}_suggestions`);
+			const pickedEl = document.getElementById(`${prefix}_picked`);
+			const helpEl = document.getElementById(`${prefix}_help`);
+			let results = [];
+			let active = -1;
+			let picked = null;
+			let timer = null;
+			let controller = null;
+			// Only the latest search may render; an older, slower response is dropped.
+			let latest = 0;
+
+			function open() {
+				list.hidden = false;
+				input.setAttribute("aria-expanded", "true");
+			}
+			function close() {
+				list.hidden = true;
+				active = -1;
+				input.setAttribute("aria-expanded", "false");
+				input.removeAttribute("aria-activedescendant");
+			}
+			function showNote(text, isError) {
+				results = [];
+				list.innerHTML = `<li class="suggestion-note${isError ? " error" : ""}">${escapeHtml(text)}</li>`;
+				open();
+			}
+			function renderResults() {
+				if (!results.length) { showNote("No places found."); return; }
+				list.innerHTML = results.map((p, i) => `
+					<li class="suggestion" role="option" id="${prefix}_opt_${i}" data-index="${i}" aria-selected="${i === active}">
+						<span class="s-name">${escapeHtml(p.display_name || p.formatted_address || "Unnamed place")}</span>
+						${p.formatted_address ? `<span class="s-addr">${escapeHtml(p.formatted_address)}</span>` : ""}
+						${p.lat != null && p.lng != null ? `<span class="s-coords">${escapeHtml(formatCoords(p))}</span>` : ""}
+					</li>`).join("");
+				open();
+				if (active >= 0) input.setAttribute("aria-activedescendant", `${prefix}_opt_${active}`);
+				else input.removeAttribute("aria-activedescendant");
+			}
+			function setPicked(place) {
+				picked = place;
+				helpEl.hidden = Boolean(place);
+				pickedEl.hidden = !place;
+				pickedEl.innerHTML = place
+					? `<span>📍</span><span class="p-text"><b>${escapeHtml(place.display_name || "Picked place")}</b>${place.formatted_address ? `<br>${escapeHtml(place.formatted_address)}` : ""}<br><span class="p-coords">${escapeHtml(formatCoords(place))}</span></span>`
+					: "";
+			}
+			function choose(index) {
+				const place = results[index];
+				if (!place) return;
+				input.value = placeLabel(place);
+				setPicked(place);
+				close();
+			}
+			async function search(query) {
+				controller?.abort();
+				controller = new AbortController();
+				const mine = ++latest;
+				try {
+					const res = await fetch(`/api/places/search?q=${encodeURIComponent(query)}`, { signal: controller.signal });
+					const body = await res.json();
+					if (mine !== latest) return;
+					if (!res.ok) { showNote(`Search unavailable: ${body.message || res.status}`, true); return; }
+					results = (body.places || []).filter((p) => p.place_id && p.lat != null && p.lng != null);
+					active = -1;
+					renderResults();
+				} catch (err) {
+					if (err.name === "AbortError" || mine !== latest) return;
+					showNote(`Search failed: ${err.message}`, true);
+				}
+			}
+			function reset() {
+				clearTimeout(timer);
+				controller?.abort();
+				latest++;
+				results = [];
+				close();
+				setPicked(null);
+			}
+
+			input.addEventListener("input", () => {
+				setPicked(null);
+				clearTimeout(timer);
+				const query = input.value.trim();
+				if (query.length < SEARCH_MIN_CHARS) {
+					controller?.abort();
+					latest++;
+					results = [];
+					close();
+					return;
+				}
+				showNote("Searching…");
+				timer = setTimeout(() => search(query), SEARCH_DEBOUNCE_MS);
+			});
+			input.addEventListener("keydown", (e) => {
+				if (e.key === "Escape") { close(); return; }
+				if (!results.length) return;
+				if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+					e.preventDefault();
+					const step = e.key === "ArrowDown" ? 1 : -1;
+					active = list.hidden ? 0 : (active + step + results.length) % results.length;
+					renderResults();
+					document.getElementById(`${prefix}_opt_${active}`)?.scrollIntoView({ block: "nearest" });
+				} else if (e.key === "Enter" && !list.hidden) {
+					// Enter in an open list picks rather than submitting half-typed text;
+					// with nothing highlighted it takes the top match, which is what an
+					// unpicked submit would resolve to anyway.
+					e.preventDefault();
+					choose(active >= 0 ? active : 0);
+				}
+			});
+			input.addEventListener("focus", () => { if (results.length && !picked) renderResults(); });
+			input.addEventListener("blur", close);
+			// mousedown, not click: it fires before the input's blur closes the list.
+			list.addEventListener("mousedown", (e) => {
+				e.preventDefault();
+				const option = e.target.closest("[data-index]");
+				if (option) choose(Number(option.dataset.index));
+			});
+
+			return { getPicked: () => picked, reset };
+		}
+
+		const dropoffSearch = attachPlaceSearch("dropoff");
+		const pickupSearch = attachPlaceSearch("pickup");
+
+		const pickupField = document.getElementById("pickup_field");
+		const dropoffLabel = document.getElementById("dropoff_label");
+		const directionsHelp = document.getElementById("directions_help");
+
+		// The main location field is always sent as `dropoff_location`: Fleet uses it for
+		// every trip unless a distinct pick-up place is given, so for a pick-up-only
+		// request it simply *is* the pick-up place. A second field only earns its place
+		// when there are two trips that may start and end in different spots.
+		const DIRECTION_COPY = {
+			"Drop-off": { label: "Drop-off location", help: "One trip, from the office to this place." },
+			"Pick-up": { label: "Pick-up location", help: "One trip, from this place to the office." },
+			"Both": { label: "Drop-off location", help: "Two trips, each matched, approved and reserved on its own." },
+		};
+
+		function selectedDirections() {
+			return form.querySelector('input[name="requested_directions"]:checked')?.value || "Drop-off";
+		}
+
+		function syncDirections() {
+			const directions = selectedDirections();
+			const copy = DIRECTION_COPY[directions];
+			dropoffLabel.textContent = copy.label;
+			directionsHelp.textContent = copy.help;
+			const separatePickup = directions === "Both";
+			pickupField.hidden = !separatePickup;
+			if (!separatePickup) {
+				document.getElementById("pickup_location").value = "";
+				pickupSearch.reset();
+			}
+		}
+		form.querySelectorAll('input[name="requested_directions"]').forEach((radio) => radio.addEventListener("change", syncDirections));
+		syncDirections();
 
 		form.addEventListener("submit", async (e) => {
 			e.preventDefault();
@@ -746,16 +1027,19 @@
 			submitBtn.disabled = true;
 			submitBtn.innerHTML = `<span class="spinner"></span> Creating…`;
 
-			const directions = document.getElementById("requested_directions").value;
-			const pickup = document.getElementById("pickup_location").value.trim();
+			const directions = selectedDirections();
+			const pickup = directions === "Both" ? document.getElementById("pickup_location").value.trim() : "";
 			const payload = {
 				candidate_name: document.getElementById("candidate_name").value.trim(),
 				dropoff_location: document.getElementById("dropoff_location").value.trim(),
 				requested_directions: directions,
-				// Only sent when a pick-up was actually asked for. An empty string would
-				// be indistinguishable from "no pickup given" on the wire anyway, but
-				// omitting it keeps the payload honest about what was requested.
-				pickup_location: directions === "Drop-off" ? null : pickup || null,
+				// Only a two-trip request carries a separate pick-up place; blank means
+				// Fleet reuses the drop-off place for the pick-up trip.
+				pickup_location: pickup || null,
+				// The exact place picked from search, so create does not re-search the
+				// text and land on a different top match. Null means "resolve the text".
+				dropoff_place: dropoffSearch.getPicked(),
+				pickup_place: pickup ? pickupSearch.getPicked() : null,
 				phone: document.getElementById("phone").value.trim() || null,
 				priority: document.getElementById("priority").checked,
 			};
@@ -773,7 +1057,9 @@
 					toast("ok", `Created ${payload.candidate_name}`);
 					renderPlaceCard(body.dropoff_place);
 					form.reset();
-					syncPickupField();
+					dropoffSearch.reset();
+					pickupSearch.reset();
+					syncDirections();
 					loadList();
 				} else {
 					showResult("error", `${res.status} ${res.statusText} — ${body.error?.message || body.message || "request failed"}`);
@@ -792,6 +1078,7 @@
 		const recruiterSubmitBtn = document.getElementById("recruiter-submit-btn");
 		const recruiterResultEl = document.getElementById("recruiter-result");
 		const recruiterCurrentEl = document.getElementById("recruiter-current");
+		const recruiterSummaryEl = document.getElementById("recruiter-summary");
 
 		async function loadRecruiter() {
 			try {
@@ -800,9 +1087,11 @@
 					const r = await res.json();
 					recruiterCurrentEl.innerHTML = `<div class="recruiter-chip"><span class="recruiter-avatar">${escapeHtml((r.name || "?")[0])}</span><div><div class="recruiter-name">${escapeHtml(r.name)}</div><div class="recruiter-email">${escapeHtml(r.email)}</div></div></div>`;
 					recruiterSubmitBtn.textContent = "Update recipient";
+					recruiterSummaryEl.textContent = r.email || "";
 				} else if (res.status === 404) {
 					recruiterCurrentEl.innerHTML = `<div class="recruiter-empty">No recipient set yet.</div>`;
 					recruiterSubmitBtn.textContent = "Save recipient";
+					recruiterSummaryEl.textContent = "not set";
 				}
 			} catch {
 				recruiterCurrentEl.innerHTML = `<div class="recruiter-empty">Could not load recipient.</div>`;
@@ -878,6 +1167,17 @@
 			const direction = requestBtn.getAttribute("data-direction");
 			const query = direction ? `?direction=${encodeURIComponent(direction)}` : "";
 			runAction(requestBtn, `/api/reservations/${encodeURIComponent(idOrName)}/request-reservation${query}`, "Requesting…");
+		});
+
+		// Per-browser convenience only: remembers whether this viewer folded the list.
+		const candidatesSection = document.getElementById("candidates-section");
+		const CANDIDATES_OPEN_KEY = "mock.candidatesOpen";
+		try {
+			const saved = localStorage.getItem(CANDIDATES_OPEN_KEY);
+			if (saved !== null) candidatesSection.open = saved === "1";
+		} catch {}
+		candidatesSection.addEventListener("toggle", () => {
+			try { localStorage.setItem(CANDIDATES_OPEN_KEY, candidatesSection.open ? "1" : "0"); } catch {}
 		});
 
 		checkHealth();

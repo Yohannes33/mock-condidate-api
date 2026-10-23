@@ -109,6 +109,7 @@ EXTERNAL_RESERVATION_TOKEN=mock-reservation-secret
 | `GET` | `/health` | Liveness health check (`{"ok": true}`) |
 | `POST` | `/api/method/receive_candidate` | Intake candidate (accepts JSON or form-encoded) |
 | `GET` | `/api/method/receive_candidate` | Intake candidate via query parameters |
+| `GET` | `/api/places/search?q=Edna%20Mall&limit=5` | Live Google Places suggestions (used by the Web UI's location fields). `503` without `GOOGLE_API_KEY`, `502` when Google refuses |
 | `GET` | `/api/method/frappe.client.get_list?doctype=Candidate` | List all candidates |
 | `GET` | `/api/resource/Candidate/:name` | Fetch one candidate by name |
 | `PUT` | `/api/external/reservation` | Inbound callback from Frappe when candidate is ready for reservation |
@@ -150,6 +151,8 @@ Send via `application/json` or `application/x-www-form-urlencoded`:
 | `id` | `string` | Optional | Caller-provided idempotency key. If omitted, mock generates `REQ-<n>` (e.g. `REQ-1004`) |
 | `phone` | `string` | Optional | Contact phone number |
 | `priority` | `boolean` | Optional | High priority flag (defaults to `false`) |
+| `dropoff_place` | `object` | Optional | A place already picked from `/api/places/search` (`place_id`, `display_name`, `formatted_address`, numeric `lat`/`lng`). Used as-is instead of re-searching `dropoff_location`. JSON bodies only |
+| `pickup_place` | `object` | Optional | Same as `dropoff_place`, for `pickup_location`. Only accepted alongside `pickup_location` |
 
 > ⚠️ **Validation Note**: Unknown fields are rejected with `400 ValidationError`. Also, providing a `pickup_location` when `requested_directions` is `"Drop-off"` will trigger a validation error.
 
