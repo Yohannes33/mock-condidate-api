@@ -94,6 +94,24 @@ function normalizeQuery(text: string): string {
 
 const ADDIS_BIAS = { circle: { center: ADDIS_CENTER, radius: ADDIS_RADIUS_M } };
 
+type GoogleErrorBody = {
+	error?: { status?: string; message?: string; details?: Array<{ reason?: string }> };
+};
+
+/** "REASON (STATUS): message" from a Google error body, or null when it has none. */
+async function googleErrorDetail(res: Response): Promise<string | null> {
+	try {
+		const { error } = (await res.json()) as GoogleErrorBody;
+		if (!error) return null;
+		const reason = error.details?.find((d) => d.reason)?.reason;
+		const label = [reason, error.status && `(${error.status})`].filter(Boolean).join(" ");
+		const text = [label, error.message].filter(Boolean).join(": ");
+		return text ? text.slice(0, 300) : null;
+	} catch {
+		return null;
+	}
+}
+
 async function callPlaces(
 	path: string,
 	init: { method: "GET" | "POST"; fieldMask?: string; body?: unknown },
@@ -115,11 +133,16 @@ async function callPlaces(
 			signal: controller.signal,
 		});
 		if (!res.ok) {
-			console.warn(`[place] Google API non-2xx on ${path.split("?")[0]}: ${res.status} ${res.statusText}`);
+			// Google's body names the actual cause (API disabled, key IP-restricted, billing
+			// off). A bare "403 Forbidden" hides which of those to go and fix.
+			const detail = await googleErrorDetail(res);
+			console.warn(
+				`[place] Google API non-2xx on ${path.split("?")[0]}: ${res.status} ${res.statusText}${detail ? ` — ${detail}` : ""}`,
+			);
 			return {
 				ok: false,
 				reason: "upstream_error",
-				message: `Google Places returned ${res.status} ${res.statusText}`,
+				message: `Google Places returned ${res.status} ${res.statusText}${detail ? `: ${detail}` : ""}`,
 			};
 		}
 		return { ok: true, data: await res.json() };
